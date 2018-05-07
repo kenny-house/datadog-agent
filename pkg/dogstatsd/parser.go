@@ -31,6 +31,7 @@ var metricTypes = map[string]metrics.MetricType{
 var tagSeparator = []byte(",")
 var fieldSeparator = []byte("|")
 var valueSeparator = []byte(":")
+var valueDelimiter = []byte(",")
 
 func nextMessage(packet *[]byte) (message []byte) {
 	if len(*packet) == 0 {
@@ -231,7 +232,7 @@ func parseEventMessage(message []byte) (*metrics.Event, error) {
 	return &event, nil
 }
 
-func parseMetricMessage(message []byte, namespace string) (*metrics.MetricSample, error) {
+func parseMetricMessage(message []byte, namespace string) ([]*metrics.MetricSample, error) {
 	// daemon:666|g|#sometag1:somevalue1,sometag2:somevalue2
 	// daemon:666|g|@0.1|#sometag:somevalue"
 
@@ -287,7 +288,7 @@ func parseMetricMessage(message []byte, namespace string) (*metrics.MetricSample
 		return nil, fmt.Errorf("invalid metric type for %q", message)
 	}
 
-	sample := &metrics.MetricSample{
+	sample := metrics.MetricSample{
 		Name:       metricName,
 		Mtype:      metricType,
 		Tags:       metricTags,
@@ -296,16 +297,52 @@ func parseMetricMessage(message []byte, namespace string) (*metrics.MetricSample
 		Timestamp:  0,
 	}
 
+	// No need to parse multiple numeric values from set types
 	if metricType == metrics.SetType {
 		sample.RawValue = string(rawValue)
-	} else {
-		metricValue, err := strconv.ParseFloat(string(rawValue), 64)
-		if err != nil {
-			return nil, fmt.Errorf("invalid metric value for %q", message)
-		}
-		sample.RawValue = string(rawValue)
-		sample.Value = metricValue
+		return []*metrics.MetricSample{&sample}, nil
 	}
 
-	return sample, nil
+	var samples []*metrics.MetricSample
+	var me multiError
+	for {
+		if rawValue == nil {
+			break
+		}
+
+		rawValueSection, remainder := nextField(rawValue, valueDelimiter)
+		metricValue, err := strconv.ParseFloat(string(rawValueSection), 64)
+		if err != nil {
+			me = append(me, err)
+			continue
+		}
+
+		// Copy sample and append to samples
+		s := sample
+		s.RawValue = string(rawValueSection)
+		s.Value = metricValue
+		samples = append(samples, &s)
+
+		rawValue = remainder
+	}
+
+	// Only return non-nil error if any errors encountered
+	if len(me) > 0 {
+		return samples, me
+	}
+
+	return samples, nil
+}
+
+type multiError []error
+
+func (me multiError) Error() string {
+	var msg string
+	for i, e := range me {
+		if i != 0 {
+			msg += ":"
+		}
+		msg += e.Error()
+	}
+	return msg
 }

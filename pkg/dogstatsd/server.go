@@ -210,17 +210,25 @@ func (s *Server) worker(metricOut chan<- *metrics.MetricSample, eventOut chan<- 
 					dogstatsdExpvar.Add("EventPackets", 1)
 					eventOut <- *event
 				} else {
-					sample, err := parseMetricMessage(message, s.metricPrefix)
+					samples, err := parseMetricMessage(message, s.metricPrefix)
 					if err != nil {
 						log.Errorf("Dogstatsd: error parsing metrics: %s", err)
 						dogstatsdExpvar.Add("MetricParseErrors", 1)
+						// Don't continue / break from iteration, there may be some valid samples
+					}
+
+					// No valid samples, continue
+					if len(samples) == 0 {
 						continue
 					}
-					if len(originTags) > 0 {
-						sample.Tags = append(sample.Tags, originTags...)
-					}
+
 					dogstatsdExpvar.Add("MetricPackets", 1)
-					metricOut <- sample
+					for _, s := range samples {
+						if len(originTags) > 0 {
+							s.Tags = append(s.Tags, originTags...)
+						}
+						metricOut <- s
+					}
 				}
 			}
 			// Return the packet object back to the object pool for reuse
